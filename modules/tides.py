@@ -1,6 +1,8 @@
 import defusedxml.ElementTree as ET
 from urllib.request import urlopen
+import logging
 
+logger = logging.getLogger(__name__)
 
 class TidesScraper:
     def __init__(self, location):
@@ -30,11 +32,12 @@ class TidesScraper:
                     return formatted_output
 
         except Exception as e:
-            print("An error occurred:", e)
+            logger.error("Failed to fetch tide data: %s",e )
 
 
-# Example usage:
-rss_url = "https://www.tidetimes.org.uk/swansea-tide-times.rss"
-location="Swansea";
-scraper = TidesScraper(location)
-scraper.get_tides()
+
+# # Example usage:
+# rss_url = "https://www.tidetimes.org.uk/swansea-tide-times.rss"
+# location="Swansea";
+# scraper = TidesScraper(location)
+# scraper.get_tides()

@@ -14,6 +14,7 @@ meshbot.py: A message bot designed for Meshtastic, providing information from mo
 Author:
 - Andy
 - April 2024
+- Ben Mason , Feb 2026
 
 MIT License
 
@@ -44,8 +45,7 @@ import secrets
 import threading
 import time
 from pathlib import Path
-
-import requests
+# import requests
 import yaml
 
 try:
@@ -81,349 +81,447 @@ logging.basicConfig(
 )
 logger = logging.getLogger()
 
-# GLOBALS
-LOCATION = ""
-TIDE_LOCATION = ""
-MYNODE = ""
-MYNODES = ""
-DBFILENAME = ""
-DM_MODE = ""
-FIREWALL = ""
-DUTYCYCLE = ""
+class MeshBot:
 
-with open("settings.yaml", "r") as file:
-    settings = yaml.safe_load(file)
+    def __init__(self, ip_host = None, serial_port = None, db = None):
+        self.serial_ports = serial_port
+        self.ip_host = ip_host
+        self.db = db
+        self.weather_info = None
+        self.tides_info = None
 
-LOCATION = settings.get("LOCATION")
-TIDE_LOCATION = settings.get("TIDE_LOCATION")
-MYNODE = settings.get("MYNODE")
-MYNODES = settings.get("MYNODES")
-DBFILENAME = settings.get("DBFILENAME")
-DM_MODE = settings.get("DM_MODE")
-FIREWALL = settings.get("FIREWALL")
-DUTYCYCLE = settings.get("DUTYCYCLE")
+        self.transmission_count = 0
+        self.cooldown = False
+        self.kill_all_robots = 0  # Assuming you missed defining kill_all_robots
 
-logger.info(f"DUTYCYCLE: {DUTYCYCLE}")
-logger.info(f"DM_MODE: {DM_MODE}")
-logger.info(f"FIREWALL: {FIREWALL}")
-# try:
-#    LOCATION = requests.get("https://ipinfo.io/city").text
-#    logger.info(f"Setting location to {LOCATION}")
-# except:
-#    logger.warning("Could not calculate location.  Using defaults")
+        self.load_setting()
 
-weather_fetcher = WeatherFetcher(LOCATION)
-tides_scraper = TidesScraper(TIDE_LOCATION)
-bbs = BBS()
-transmission_count = 0
-cooldown = False
-kill_all_robots = 0  # Assuming you missed defining kill_all_robots
+    def load_setting(self):
 
+        with open("settings.yaml", "r") as file:
+            settings = yaml.safe_load(file)
 
-# Function to periodically refresh weather and tides data
-def refresh_data():
-    while True:
-        global weather_info
-        global tides_info
-        weather_info = weather_fetcher.get_weather()
-        tides_info = tides_scraper.get_tides()
-        time.sleep(3 * 60 * 60)  # Sleep for 3 hours
+        self.location = settings.get("LOCATION")
+        self.tide_location = settings.get("TIDE_LOCATION", self.location)
+        self.mynode = settings.get("MYNODE")
+        self.mynodes = settings.get("MYNODES")
+        self.db_filename = settings.get("DBFILENAME")
+        self.dm_mode = settings.get("DM_MODE")
+        self.firewall = settings.get("FIREWALL")
+        self.dutycycle = settings.get("DUTYCYCLE")
 
+        logger.info(f"DUTYCYCLE: {self.dutycycle}")
+        logger.info(f"DM_MODE: {self.dm_mode}")
+        logger.info(f"FIREWALL: {self.firewall}")
+        # try:
+        #    self.location = requests.get("https://ipinfo.io/city").text
+        #    logger.info(f"Setting location to {self.location}")
+        # except:
+        #    logger.warning("Could not calculate location.  Using defaults")
 
-def reset_transmission_count():
-    global transmission_count
-    transmission_count -= 1
-    if transmission_count < 0:
-        transmission_count = 0
-    logger.info(f"Reducing transmission count {transmission_count}")
-    threading.Timer(180.0, reset_transmission_count).start()
+        self.weather_fetcher = WeatherFetcher(self.location)
+        self.tides_scraper = TidesScraper(self.tide_location)
+        self.bbs = BBS()
 
+    # Function to periodically refresh weather and tides data
+    def refresh_data(self):
+        while True:
+            self.weather_info = self.weather_fetcher.get_weather()
+            self.tides_info = self.tides_scraper.get_tides()
+            time.sleep(3 * 60 * 60)  # Sleep for 3 hours
 
-def reset_cooldown():
-    global cooldown
-    cooldown = False
-    logger.info("Cooldown Disabled.")
-    threading.Timer(240.0, reset_cooldown).start()
+    def _background_resets(self):
+        """Single background thread handling all periodic resets."""
+        last_transmission_reset = time.time()
+        last_cooldown_reset = time.time()
+        last_killbot_reset = time.time()
 
+        while True:
+            now = time.time()
 
-def reset_killallrobots():
-    global kill_all_robots
-    kill_all_robots = 0
-    logger.info("Killbot Disabled.")
-    threading.Timer(120.0, reset_killallrobots).start()
+            if now - last_transmission_reset >= 180:
+                self.transmission_count = max(0, self.transmission_count - 1)
+                logger.info(f"Reducing transmission count {self.transmission_count}")
+                last_transmission_reset = now
 
+            if now - last_cooldown_reset >= 240:
+                self.cooldown = False
+                logger.info("Cooldown Disabled.")
+                last_cooldown_reset = now
 
-# Function to handle incoming messages
-def message_listener(packet, interface):
-    global transmission_count
-    global cooldown
-    global kill_all_robots
-    global weather_info
-    global tides_info
-    global DBFILENAME
-    global DM_MODE
-    global FIREWALL
-    global DUTYCYCLE
+            if now - last_killbot_reset >= 120:
+                self.kill_all_robots = 0
+                logger.info("Killbot Disabled.")
+                last_killbot_reset = now
 
-    if packet is not None and packet["decoded"].get("portnum") == "TEXT_MESSAGE_APP":
-        message = packet["decoded"]["text"].lower()
-        sender_id = packet["from"]
-        logger.info(f"Message {packet['decoded']['text']} from {packet['from']}")
-        logger.info(f"transmission count {transmission_count}")
-        
-        if (
-            transmission_count < 16 or DUTYCYCLE == False
-            and (DM_MODE == 0 or str(packet["to"]) == MYNODE)
-            and (FIREWALL == 0 or any(node in str(packet["from"]) for node in MYNODES))
-        ):
-            if "#fw" in message:
-                message_parts = message.split(" ")
-                if len(message_parts) > 1:
-                    if message_parts[1].lower() == "off":
-                        FIREWALL = False
-                        logger.info("FIREWALL=False")
-                    else:
-                        FIREWALL = True
-                        logger.info("FIREWALL=True")
-                else:
-                    FIREWALL = True
-                    logger.info("FIREWALL=True")
-            elif "#dm" in message:
-                message_parts = message.split(" ")
-                if len(message_parts) > 1:
-                    if message_parts[1].lower() == "off":
-                        DM_MODE = False
-                        logger.info("DM_MODE=False")
-                    else:
-                        DM_MODE = True
-                        logger.info("DM_MODE=True")
-                else:
-                    DM_MODE = True
-                    logger.info("DM_MODE=True")
+            time.sleep(5)  # Check every 5 seconds — negligible CPU usage
 
-            elif "#flipcoin" in message:
-                transmission_count += 1
-                interface.sendText(
-                    secrets.choice(["Heads", "Tails"]),
-                    wantAck=True,
-                    destinationId=sender_id,
-                )
-            elif "#random" in message:
-                transmission_count += 1
-                interface.sendText(
-                    str(secrets.randbelow(10) + 1),
-                    wantAck=True,
-                    destinationId=sender_id,
-                )
-            elif "#twin" in message:
-                message_parts = packet["decoded"]["text"].split(" ")
-                content = " ".join(message_parts[2:])
-                if message_parts[1].lower() == "d":
-                    interface.sendText(
-                        TwinHexDecoder().decrypt(content),
-                        wantAck=True,
-                        destinationId=sender_id,
-                    )
-                else:
-                    interface.sendText(
-                        TwinHexEncoder().encrypt(content),
-                        wantAck=True,
-                        destinationId=sender_id,
-                    )
-            elif "#weather" in message:
-                transmission_count += 1
-                interface.sendText(weather_info, wantAck=True, destinationId=sender_id)
-            elif "#tides" in message:
-                transmission_count += 1
-                interface.sendText(tides_info, wantAck=True, destinationId=sender_id)
-            elif "#test" in message:
-                transmission_count += 1
-                interface.sendText("🟢 ACK", wantAck=True, destinationId=sender_id)
-            elif "#tst-detail" in message:
-                transmission_count += 1
-                testreply = "🟢 ACK."
-                if "hopStart" in packet:
-                    if (packet["hopStart"] - packet["hopLimit"]) == 0:
-                        testreply += "Received Directly at "
-                    else:
-                        testreply += "Received from " + str(packet["hopStart"] - packet["hopLimit"]) + "hop(s) away at"
-                testreply += str(packet["rxRssi"]) + "dB, SNR: " + str(packet["rxSnr"]) + "dB (" + str(int(packet["rxSnr"] + 10 * 5)) + "%)"
-                interface.sendText(testreply, wantAck=True, destinationId=sender_id)
-            elif "#whois #" in message:
-                message_parts = message.split("#")
-                transmission_count += 1
-                lookup_complete = False
-                if len(message_parts) > 1:
-                    whois_search = Whois(DBFILENAME)
-                    logger.info(
-                        f"Querying whois DB {DBFILENAME} for: {message_parts[2].strip()}"
-                    )
-                    try:
-                        if (
-                            type(int(message_parts[2].strip(), 16)) == int
-                            or type(int(message_parts[2].strip().upper(), 16)) == int
-                        ):
-                            result = whois_search.search_nodes(message_parts[2].strip())
+    def reset_transmission_count(self):
+        self.transmission_count -= 1
+        if self.transmission_count < 0:
+            self.transmission_count = 0
+        logger.info(f"Reducing transmission count {self.transmission_count}")
+        threading.Timer(180.0, self.reset_transmission_count).start()
 
-                            if result:
-                                node_id, long_name, short_name = result
-                                whois_data = f"ID:{node_id}\n"
-                                whois_data += f"Long Name: {long_name}\n"
-                                whois_data += f"Short Name: {short_name}"
-                                logger.info(f"Data: {whois_data}")
-                                interface.sendText(
-                                    f"{whois_data}",
-                                    wantAck=False,
-                                    destinationId=sender_id,
-                                )
-                            else:
-                                interface.sendText(
-                                    "No matching record found.",
-                                    wantAck=False,
-                                    destinationId=sender_id,
-                                )
-                                lookup_complete = True
-                    except:
-                        logger.error("Not a hex string aborting!")
-                        pass
-                    if (
-                        type(message_parts[2].strip()) == str
-                        and lookup_complete == False
-                    ):
-                        result = whois_search.search_nodes_sn(message_parts[2].strip())
+    def reset_cooldown(self):
+        self.cooldown = False
+        logger.info("Cooldown Disabled.")
+        threading.Timer(240.0, self.reset_cooldown).start()
 
-                        if result:
-                            node_id, long_name, short_name = result
-                            whois_data = f"ID:{node_id}\n"
-                            whois_data += f"Long Name: {long_name}\n"
-                            whois_data += f"Short Name: {short_name}"
-                            logger.info(f"Data: {whois_data}")
-                            interface.sendText(
-                                f"{whois_data}", wantAck=False, destinationId=sender_id
-                            )
-                        else:
-                            interface.sendText(
-                                "No matching record found.",
-                                wantAck=False,
-                                destinationId=sender_id,
-                            )
+    def reset_killallrobots(self):
+        self.kill_all_robots = 0
+        logger.info("Killbot Disabled.")
+        threading.Timer(120.0, self.reset_killallrobots).start()
 
+    def command_fw(self, message):
+        logger.info("Firewall Mode Command Received")
+        message_parts = message.split(" ")
+        if len(message_parts) > 1:
+            if message_parts[1].lower() == "off":
+                self.firewall = False
+                logger.info("FIREWALL=False")
+            else:
+                self.firewall = True
+                logger.info("FIREWALL=True")
+        else:
+            self.firewall = True
+            logger.info("FIREWALL=True")
+
+    def command_dm(self, message):
+        logger.info("DM Mode Command Received")
+        message_parts = message.split(" ")
+        if len(message_parts) > 1:
+            if message_parts[1].lower() == "off":
+                self.dm_mode = False
+                logger.info("DM_MODE=False")
+            else:
+                self.dm_mode = True
+                logger.info("DM_MODE=True")
+        else:
+            self.dm_mode = True
+            logger.info("DM_MODE=True")
+
+    def command_flipcoin(self, interface, sender_id):
+
+        logger.info("Flipcoin Command Recived")
+        # Increment the transmission count for this message
+        self.transmission_count += 1
+        interface.sendText(
+            secrets.choice(["Heads", "Tails"]),
+            wantAck=True,
+            destinationId=sender_id,
+        )
+
+    def command_random(self, interface, sender_id):
+
+        logger.info("Random Command Recived")
+        self.transmission_count += 1
+        interface.sendText(
+            str(secrets.randbelow(10) + 1),
+            wantAck=True,
+            destinationId=sender_id,
+        )
+
+    def command_twin(self, message, interface, sender_id):
+        logger.info("Twin Command Recived")
+#        message_parts = packet["decoded"]["text"].split(" ")
+        message_parts = message.split(" ")
+        content = " ".join(message_parts[2:])
+        if message_parts[1].lower() == "d":
+            interface.sendText(
+                TwinHexDecoder().decrypt(content),
+                wantAck=True,
+                destinationId=sender_id,
+            )
+        else:
+            interface.sendText(
+                TwinHexEncoder().encrypt(content),
+                wantAck=True,
+                destinationId=sender_id,
+            )
+
+    def command_tst_detail(self, packet, interface, sender_id):
+        logger.info("Detailed Test command Received")
+        self.transmission_count += 1
+        testreply = "🟢 ACK."
+        if "hopStart" in packet:
+            if (packet["hopStart"] - packet["hopLimit"]) == 0:
+                testreply += "Received Directly at "
+            else:
+                testreply += "Received from " + str(packet["hopStart"] - packet["hopLimit"]) + "hop(s) away at"
+        testreply += str(packet["rxRssi"]) + "dB, SNR: " + str(packet["rxSnr"]) + "dB (" + str(int(packet["rxSnr"] + 10 * 5)) + "%)"
+        interface.sendText(testreply, wantAck=True, destinationId=sender_id)
+
+    def command_whois(self, message, interface, sender_id):
+        logger.info("whois command received")
+        message_parts = message.split("#")
+        self.transmission_count += 1
+        lookup_complete = False
+        if len(message_parts) > 1:
+            whois_search = Whois(self.db_filename)
+            logger.info(
+                f"Querying whois DB {self.db_filename} for: {message_parts[2].strip()}"
+            )
+            try:
+                if (
+                    type(int(message_parts[2].strip(), 16)) == int
+                    or type(int(message_parts[2].strip().upper(), 16)) == int
+                ):
+                    result = whois_search.search_nodes(message_parts[2].strip())
+
+                    if result:
+                        node_id, long_name, short_name = result
+                        whois_data = f"ID:{node_id}\n"
+                        whois_data += f"Long Name: {long_name}\n"
+                        whois_data += f"Short Name: {short_name}"
+                        logger.info(f"Data: {whois_data}")
+                        interface.sendText(
+                            f"{whois_data}",
+                            wantAck=False,
+                            destinationId=sender_id,
+                        )
                     else:
                         interface.sendText(
                             "No matching record found.",
                             wantAck=False,
                             destinationId=sender_id,
                         )
+                        lookup_complete = True
+            except:
+                logger.error("Not a hex string aborting!")
+                pass
+            if (
+                type(message_parts[2].strip()) == str
+                and lookup_complete == False
+            ):
+                result = whois_search.search_nodes_sn(message_parts[2].strip())
 
-                    whois_search.close_connection()
+                if result:
+                    node_id, long_name, short_name = result
+                    whois_data = f"ID:{node_id}\n"
+                    whois_data += f"Long Name: {long_name}\n"
+                    whois_data += f"Short Name: {short_name}"
+                    logger.info(f"Data: {whois_data}")
+                    interface.sendText(
+                        f"{whois_data}", wantAck=False, destinationId=sender_id
+                    )
                 else:
-                    pass
-            elif "#bbs" in message:
-                transmission_count += 1
-                count = 0
-                message_parts = message.split()
-                addy = hex(packet["from"]).replace("0x", "!")
-                if message_parts[1].lower() == "any":
-                    try:
-                        count = bbs.count_messages(addy)
-                        logger.info(f"{count} messages found")
-                    except ValueError as e:
-                        message = "No new messages."
-                        logger.error(f"bbs count messages error: {e}")
-                    if count >= 0:
-                        message = "You have " + str(count) + " messages."
-                        interface.sendText(
-                            message, wantAck=True, destinationId=sender_id
-                        )
-                if message_parts[1].lower() == "get":
-                    try:
-                        messages = bbs.get_message(addy)
-                        if messages:
-                            for user, message in messages:
-                                logger.info(f"Message for {user}: {message}")
-                                interface.sendText(
-                                    message,
-                                    wantAck=False,
-                                    destinationId=sender_id,
-                                )
-                            bbs.delete_message(addy)
-                        else:
-                            message = "No new messages."
-                            logger.info("No new messages")
-                            interface.sendText(
-                                message,
-                                wantAck=False,
-                                destinationId=sender_id,
-                            )
-                    except Exception as e:
-                        logger.error(f"Error: {e}")
-
-                if message_parts[1].lower() == "post":
-                    content = " ".join(
-                        message_parts[3:]
-                    )  # Join the remaining parts as the message content
-                    whois_search = Whois(DBFILENAME)
-                    result = whois_search.search_nodes(
-                        hex(packet["from"]).replace("0x", "")
-                    )
-                    if result:
-                        node_id, long_name, short_name = result
-                    else:
-                        short_name = hex(packet["from"])
-                    content = (
-                        content
-                        + ". From: "
-                        + short_name
-                        + "("
-                        + str(hex(packet["from"])).replace("0x", "!")
-                        + ")"
-                    )
-                    bbs.post_message(message_parts[2], content)
-            elif "#kill_all_robots" in message:
-                transmission_count += 1
-                if kill_all_robots == 0:
                     interface.sendText(
-                        "Confirm", wantAck=False, destinationId=sender_id
-                    )
-                    kill_all_robots += 1
-                if kill_all_robots > 1:
-                    interface.sendText(
-                        "💣 Deactivating all reachable bots... SECRET_SHUTDOWN_STRING",
+                        "No matching record found.",
                         wantAck=False,
+                        destinationId=sender_id,
                     )
-                    transmission_count += 1
-                    kill_all_robots = 0
-        if transmission_count >= 11 and DUTYCYCLE == True:
-            if not cooldown:
+
+            else:
                 interface.sendText(
-                    "❌ Bot has reached duty cycle, entering cool down... ❄",
+                    "No matching record found.",
                     wantAck=False,
+                    destinationId=sender_id,
                 )
-                logger.info("Cooldown enabled.")
-                cooldown = True
-            logger.info(
-                "Duty cycle limit reached. Please wait before transmitting again."
-            )
+
+            whois_search.close_connection()
         else:
-            # do nothing as not a keyword and message destination was the node
             pass
 
+    def command_bbs(self, packet, interface, sender_id):
+        logger.info("bbs Command Received")
+        message = packet["decoded"]["text"].lower()
+        self.transmission_count += 1
+        count = 0
+        message_parts = message.split()
+        addy = hex(packet["from"]).replace("0x", "!")
+        if message_parts[1].lower() == "any":
+            try:
+                count = self.bbs.count_messages(addy)
+                logger.info(f"{count} messages found")
+            except ValueError as e:
+                message = "No new messages."
+                logger.error(f"bbs count messages error: {e}")
+            if count >= 0:
+                message = "You have " + str(count) + " messages."
+                interface.sendText(
+                    message, wantAck=True, destinationId=sender_id
+                )
+        if message_parts[1].lower() == "get":
+            try:
+                messages = self.bbs.get_message(addy)
+                if messages:
+                    for user, message in messages:
+                        logger.info(f"Message for {user}: {message}")
+                        interface.sendText(
+                            message,
+                            wantAck=False,
+                            destinationId=sender_id,
+                        )
+                    self.bbs.delete_message(addy)
+                else:
+                    message = "No new messages."
+                    logger.info("No new messages")
+                    interface.sendText(
+                        message,
+                        wantAck=False,
+                        destinationId=sender_id,
+                    )
+            except Exception as e:
+                logger.error(f"Error: {e}")
 
-# Main function
-def main():
-    logger.info("Starting program.")
-    reset_transmission_count()
-    reset_cooldown()
-    reset_killallrobots()
-    cwd = Path.cwd()
-    global DBFILENAME
+        if message_parts[1].lower() == "post":
+            content = " ".join(
+                message_parts[3:]
+            )  # Join the remaining parts as the message content
+            whois_search = Whois(self.db_filename)
+            result = whois_search.search_nodes(
+                hex(packet["from"]).replace("0x", "")
+            )
+            if result:
+                node_id, long_name, short_name = result
+            else:
+                short_name = hex(packet["from"])
+            content = (
+                content
+                + ". From: "
+                + short_name
+                + "("
+                + str(hex(packet["from"])).replace("0x", "!")
+                + ")"
+            )
+            self.bbs.post_message(message_parts[2], content)
 
+    def command_kill_all_robots(self, message, interface, sender_id):
+        logger.info("Kill All Robots Command Received")
+        self.transmission_count += 1
+        if self.kill_all_robots == 0:
+            interface.sendText(
+                "Confirm", wantAck=False, destinationId=sender_id
+            )
+            self.kill_all_robots += 1
+        if self.kill_all_robots > 1:
+            interface.sendText(
+                "💣 Deactivating all reachable bots... SECRET_SHUTDOWN_STRING",
+                wantAck=False,
+            )
+            self.transmission_count += 1
+            self.kill_all_robots = 0
+
+    def command_help(self, interface, sender_id):
+        logger.info("Help Command Received")
+        self.transmission_count += 1
+        interface.sendText(
+            "Available commands:\n #help\n #test\n #tst-detail\n #weather\n #tides\n #flipcoin\n #random\n",
+            wantAck=False,
+            destinationId=sender_id,
+        )
+
+    # Function to handle incoming messages
+    def message_listener(self, packet, interface):
+
+        if packet is not None and "decoded" in packet and packet["decoded"].get("portnum") == "TEXT_MESSAGE_APP":
+            message = packet["decoded"]["text"].lower()
+            sender_id = packet["from"]
+            logger.info(f"Message {packet['decoded']['text']} from {packet['from']}")
+            logger.info(f"transmission count {self.transmission_count}")
+            
+            if (
+                (self.transmission_count < 16 or self.dutycycle == False)
+                and (self.dm_mode == 0 or str(packet["to"]) == self.mynode)
+                and (self.firewall == 0 or any(node in str(packet["from"]) for node in self.mynodes))
+            ):
+            # if (
+            #     self.transmission_count < 16 or self.dutycycle == False
+            #     and (self.dm_mode == 0 or str(packet["to"]) == self.mynode)
+            #     and (self.firewall == 0 or any(node in str(packet["from"]) for node in self.mynodes))
+            # ):
+                if "#fw" in message:
+                    self.command_fw(message)
+                elif "#dm" in message:
+                    self.command_dm(message)
+                elif "#flipcoin" in message:
+                    self.command_flipcoin(interface, sender_id)
+                elif "#random" in message:
+                    self.command_random(interface, sender_id)
+                elif "#twin" in message:
+                    self.command_twin(message, interface, sender_id)
+                elif "#weather" in message:
+                    self.transmission_count += 1
+                    interface.sendText(self.weather_info, wantAck=True, destinationId=sender_id)
+                elif "#tides" in message:
+                    self.transmission_count += 1
+                    interface.sendText(self.tides_info, wantAck=True, destinationId=sender_id)
+                elif "#test" in message:
+                    self.transmission_count += 1
+                    interface.sendText("🟢 ACK", wantAck=True, destinationId=sender_id)
+                elif "#tst-detail" in message:
+                    self.command_tst_detail(packet, interface, sender_id)
+                elif "#whois #" in message:
+                    self.command_whois(packet, interface, sender_id)
+                elif "#bbs" in message:
+                    self.command_bbs(packet, interface, sender_id)
+                elif "#kill_all_robots" in message:
+                    self.command_kill_all_robots(message, interface, sender_id)
+                elif "#help" in message:
+                    self.command_help(packet, interface, sender_id)
+            if self.transmission_count >= 11 and self.dutycycle == True:
+                if not self.cooldown:
+                    interface.sendText(
+                        "❌ Bot has reached duty cycle, entering cool down... ❄",
+                        wantAck=False,
+                    )
+                    logger.info("Cooldown enabled.")
+                    self.cooldown = True
+                logger.info(
+                    "Duty cycle limit reached. Please wait before transmitting again."
+                )
+            else:
+                # do nothing as not a keyword and message destination was the node
+                pass
+
+
+    # Main function
+    def run(self):
+        logger.info("Starting program.")
+
+        # self.reset_transmission_count()
+        # self.reset_cooldown()
+        # self.reset_killallrobots()
+        reset_thread = threading.Thread(target=self._background_resets)
+        reset_thread.daemon = True
+        reset_thread.start()
+        # global self.db_filename
+
+        logger.info(f"Press CTRL-C x2 to terminate the program")
+
+        if self.ip_host and self.serial_ports:
+            self.interface = meshtastic.tcp_interface.TCPInterface(hostname=self.ip_host,noProto=False)
+        else:
+            self.interface = meshtastic.serial_interface.SerialInterface(self.serial_ports[0])
+
+        # Receive Mechtastic Messages    
+        pub.subscribe(self.message_listener, "meshtastic.receive")
+
+        # Start a separate thread for refreshing data periodically
+        refresh_thread = threading.Thread(target=self.refresh_data)
+        refresh_thread.daemon = True
+        refresh_thread.start()
+
+        # Keep the main thread alive
+        while True:
+            time.sleep(1)
+            continue
+
+def load_args():
     parser = argparse.ArgumentParser(description="Meshbot a bot for Meshtastic devices")
     parser.add_argument("--port", type=str, help="Specify the serial port to probe")
     parser.add_argument("--db", type=str, help="Specify DB: mpowered or liam")
     parser.add_argument("--host", type=str, help="Specify meshtastic host (IP address) if using API")
 
-    args = parser.parse_args()
+    return parser.parse_args()
+
+def main(args):
+
+    cwd = Path.cwd()
+    ip_host = None
+    serial_ports = None
+    db_mode = None
 
     if args.port:
         serial_ports = [args.port]
@@ -447,32 +545,23 @@ def main():
 
     if args.db:
         if args.db.lower() == "mpowered":
-            DBFILENAME = str(cwd) + "/db/nodes.db"
-            logger.info(f"Setting DB to mpowered data: {DBFILENAME}")
+            db_mode = str(cwd) + "/db/nodes.db"
+            logger.info(f"Setting DB to mpowered data: {db_mode}")
         if args.db.lower() == "liam":
-            DBFILENAME = str(cwd) + "/db/nodes2.db"
-            logger.info(f"Setting DB to Liam Cottle data: {DBFILENAME}")
+            db_mode = str(cwd) + "/db/nodes2.db"
+            logger.info(f"Setting DB to Liam Cottle data: {db_mode}")
     else:
-        logger.info(f"Default DB: {DBFILENAME}")
+        logger.info(f"Default DB")
 
-    logger.info(f"Press CTRL-C x2 to terminate the program")
+    meshbot = MeshBot(
+        ip_host = ip_host,
+        serial_port = serial_ports,
+        db = db_mode,
+    )
 
-    if args.host:
-        interface = meshtastic.tcp_interface.TCPInterface(hostname=ip_host,noProto=False)
-    else:
-        interface = meshtastic.serial_interface.SerialInterface(serial_ports[0])
-    pub.subscribe(message_listener, "meshtastic.receive")
-
-    # Start a separate thread for refreshing data periodically
-    refresh_thread = threading.Thread(target=refresh_data)
-    refresh_thread.daemon = True
-    refresh_thread.start()
-
-    # Keep the main thread alive
-    while True:
-        # time.sleep(1)
-        continue
-
+    meshbot.run()
 
 if __name__ == "__main__":
-    main()
+    args = load_args()
+    main(args)
+
