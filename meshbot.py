@@ -45,7 +45,7 @@ import secrets
 import threading
 import time
 from pathlib import Path
-# import requests
+import requests
 import yaml
 
 try:
@@ -101,23 +101,27 @@ class MeshBot:
         with open("settings.yaml", "r") as file:
             settings = yaml.safe_load(file)
 
-        self.location = settings.get("LOCATION")
+        if "LOCATION" in settings:
+            self.location = settings.get("LOCATION")
+        else:
+            try:
+               self.location = requests.get("https://ipinfo.io/city").text
+               logger.info(f"Setting location to {self.location}")
+            except:
+               logger.critical("Could not calculate location.  Using defaults")
+               raise Exception 
+
         self.tide_location = settings.get("TIDE_LOCATION", self.location)
         self.mynode = settings.get("MYNODE")
-        self.mynodes = settings.get("MYNODES")
+        self.mynodes = settings.get("MYNODES", None)
         self.db_filename = settings.get("DBFILENAME")
-        self.dm_mode = settings.get("DM_MODE")
-        self.firewall = settings.get("FIREWALL")
-        self.dutycycle = settings.get("DUTYCYCLE")
+        self.dm_mode = settings.get("DM_MODE", True)
+        self.firewall = settings.get("FIREWALL", True)
+        self.dutycycle = settings.get("DUTYCYCLE", True)
 
         logger.info(f"DUTYCYCLE: {self.dutycycle}")
         logger.info(f"DM_MODE: {self.dm_mode}")
         logger.info(f"FIREWALL: {self.firewall}")
-        # try:
-        #    self.location = requests.get("https://ipinfo.io/city").text
-        #    logger.info(f"Setting location to {self.location}")
-        # except:
-        #    logger.warning("Could not calculate location.  Using defaults")
 
         self.weather_fetcher = WeatherFetcher(self.location)
         self.tides_scraper = TidesScraper(self.tide_location)
@@ -155,6 +159,13 @@ class MeshBot:
                 last_killbot_reset = now
 
             time.sleep(5)  # Check every 5 seconds — negligible CPU usage
+
+    def _send(self, text, sender_id, wantAck=False):
+        try:
+            self.interface.sendText(text, wantAck=wantAck, destinationId=sender_id)
+            self.transmission_count += 1
+        except Exception as e:
+            logger.error(f"Failed to send message: {e}")
 
     def reset_transmission_count(self):
         self.transmission_count -= 1
@@ -206,21 +217,17 @@ class MeshBot:
         logger.info("Flipcoin Command Recived")
         # Increment the transmission count for this message
         self.transmission_count += 1
-        interface.sendText(
-            secrets.choice(["Heads", "Tails"]),
-            wantAck=True,
-            destinationId=sender_id,
-        )
+        
+        text = secrets.choice(["Heads", "Tails"])
+        self._send(text, sender_id, wantAck=True)
 
     def command_random(self, interface, sender_id):
 
         logger.info("Random Command Recived")
         self.transmission_count += 1
-        interface.sendText(
-            str(secrets.randbelow(10) + 1),
-            wantAck=True,
-            destinationId=sender_id,
-        )
+
+        text = str(secrets.randbelow(10) + 1)
+        self._send(text, sender_id, wantAck=True)
 
     def command_twin(self, message, interface, sender_id):
         logger.info("Twin Command Recived")
@@ -228,17 +235,12 @@ class MeshBot:
         message_parts = message.split(" ")
         content = " ".join(message_parts[2:])
         if message_parts[1].lower() == "d":
-            interface.sendText(
-                TwinHexDecoder().decrypt(content),
-                wantAck=True,
-                destinationId=sender_id,
-            )
+            text = TwinHexDecoder().decrypt(content)
+            self._send(text, sender_id, wantAck=True)
+
         else:
-            interface.sendText(
-                TwinHexEncoder().encrypt(content),
-                wantAck=True,
-                destinationId=sender_id,
-            )
+            text = TwinHexEncoder().encrypt(content)
+            self._send(text, sender_id, wantAck=True)
 
     def command_tst_detail(self, packet, interface, sender_id):
         logger.info("Detailed Test command Received")
@@ -250,7 +252,8 @@ class MeshBot:
             else:
                 testreply += "Received from " + str(packet["hopStart"] - packet["hopLimit"]) + "hop(s) away at"
         testreply += str(packet["rxRssi"]) + "dB, SNR: " + str(packet["rxSnr"]) + "dB (" + str(int(packet["rxSnr"] + 10 * 5)) + "%)"
-        interface.sendText(testreply, wantAck=True, destinationId=sender_id)
+
+        self._send(testreply, sender_id, wantAck=True)
 
     def command_whois(self, message, interface, sender_id):
         logger.info("whois command received")
@@ -275,17 +278,9 @@ class MeshBot:
                         whois_data += f"Long Name: {long_name}\n"
                         whois_data += f"Short Name: {short_name}"
                         logger.info(f"Data: {whois_data}")
-                        interface.sendText(
-                            f"{whois_data}",
-                            wantAck=False,
-                            destinationId=sender_id,
-                        )
+                        self._send(f"{whois_data}", sender_id, wantAck=False)
                     else:
-                        interface.sendText(
-                            "No matching record found.",
-                            wantAck=False,
-                            destinationId=sender_id,
-                        )
+                        self._send("No matching record found.", sender_id, wantAck=False)
                         lookup_complete = True
             except:
                 logger.error("Not a hex string aborting!")
@@ -302,22 +297,11 @@ class MeshBot:
                     whois_data += f"Long Name: {long_name}\n"
                     whois_data += f"Short Name: {short_name}"
                     logger.info(f"Data: {whois_data}")
-                    interface.sendText(
-                        f"{whois_data}", wantAck=False, destinationId=sender_id
-                    )
+                    self._send(f"{whois_data}", sender_id, wantAck=False)
                 else:
-                    interface.sendText(
-                        "No matching record found.",
-                        wantAck=False,
-                        destinationId=sender_id,
-                    )
-
+                    self._send("No matching record found.", sender_id, wantAck=False)
             else:
-                interface.sendText(
-                    "No matching record found.",
-                    wantAck=False,
-                    destinationId=sender_id,
-                )
+                self._send("No matching record found.", sender_id, wantAck=False)
 
             whois_search.close_connection()
         else:
@@ -339,29 +323,21 @@ class MeshBot:
                 logger.error(f"bbs count messages error: {e}")
             if count >= 0:
                 message = "You have " + str(count) + " messages."
-                interface.sendText(
-                    message, wantAck=True, destinationId=sender_id
-                )
+                self._send(message, sender_id, wantAck=True)
+
         if message_parts[1].lower() == "get":
             try:
                 messages = self.bbs.get_message(addy)
                 if messages:
                     for user, message in messages:
                         logger.info(f"Message for {user}: {message}")
-                        interface.sendText(
-                            message,
-                            wantAck=False,
-                            destinationId=sender_id,
-                        )
+                        self._send(message, sender_id, wantAck=False)
+
                     self.bbs.delete_message(addy)
                 else:
                     message = "No new messages."
                     logger.info("No new messages")
-                    interface.sendText(
-                        message,
-                        wantAck=False,
-                        destinationId=sender_id,
-                    )
+                    self._send(message, sender_id, wantAck=False)
             except Exception as e:
                 logger.error(f"Error: {e}")
 
@@ -391,32 +367,28 @@ class MeshBot:
         logger.info("Kill All Robots Command Received")
         self.transmission_count += 1
         if self.kill_all_robots == 0:
-            interface.sendText(
-                "Confirm", wantAck=False, destinationId=sender_id
-            )
+            self._send("Confirm", sender_id, wantAck=False)
             self.kill_all_robots += 1
         if self.kill_all_robots > 1:
-            interface.sendText(
-                "💣 Deactivating all reachable bots... SECRET_SHUTDOWN_STRING",
-                wantAck=False,
-            )
+            self._send("💣 Deactivating all reachable bots... SECRET_SHUTDOWN_STRING", sender_id, wantAck=False)
             self.transmission_count += 1
             self.kill_all_robots = 0
 
     def command_help(self, interface, sender_id):
         logger.info("Help Command Received")
         self.transmission_count += 1
-        interface.sendText(
-            "Available commands:\n #help\n #test\n #tst-detail\n #weather\n #tides\n #flipcoin\n #random\n",
-            wantAck=False,
-            destinationId=sender_id,
-        )
+        self._send("Available commands:\n #help\n #test\n #tst-detail\n #weather\n #tides\n #flipcoin\n #random\n", sender_id, wantAck=False)
 
     # Function to handle incoming messages
     def message_listener(self, packet, interface):
 
-        if packet is not None and "decoded" in packet and packet["decoded"].get("portnum") == "TEXT_MESSAGE_APP":
-            message = packet["decoded"]["text"].lower()
+        if packet is not None and "decoded" in packet and \
+                packet["decoded"].get("portnum") == "TEXT_MESSAGE_APP":
+            message = packet["decoded"]["text"]
+
+            if not message.strip().startswith("#"):
+                return
+            message = message.lower()
             sender_id = packet["from"]
             logger.info(f"Message {packet['decoded']['text']} from {packet['from']}")
             logger.info(f"transmission count {self.transmission_count}")
@@ -426,11 +398,6 @@ class MeshBot:
                 and (self.dm_mode == 0 or str(packet["to"]) == self.mynode)
                 and (self.firewall == 0 or any(node in str(packet["from"]) for node in self.mynodes))
             ):
-            # if (
-            #     self.transmission_count < 16 or self.dutycycle == False
-            #     and (self.dm_mode == 0 or str(packet["to"]) == self.mynode)
-            #     and (self.firewall == 0 or any(node in str(packet["from"]) for node in self.mynodes))
-            # ):
                 if "#fw" in message:
                     self.command_fw(message)
                 elif "#dm" in message:
@@ -459,7 +426,7 @@ class MeshBot:
                 elif "#kill_all_robots" in message:
                     self.command_kill_all_robots(message, interface, sender_id)
                 elif "#help" in message:
-                    self.command_help(packet, interface, sender_id)
+                    self.command_help(interface, sender_id)
             if self.transmission_count >= 11 and self.dutycycle == True:
                 if not self.cooldown:
                     interface.sendText(
@@ -480,13 +447,9 @@ class MeshBot:
     def run(self):
         logger.info("Starting program.")
 
-        # self.reset_transmission_count()
-        # self.reset_cooldown()
-        # self.reset_killallrobots()
         reset_thread = threading.Thread(target=self._background_resets)
         reset_thread.daemon = True
         reset_thread.start()
-        # global self.db_filename
 
         logger.info(f"Press CTRL-C x2 to terminate the program")
 
