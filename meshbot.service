@@ -1,0 +1,57 @@
+# systemd unit for MeshBot
+#
+# Install (edit the paths, user and --port/--host first):
+#   sudo cp meshbot.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now meshbot
+#
+# Logs:
+#   journalctl -u meshbot -f
+
+[Unit]
+Description=MeshBot - Meshtastic message bot
+Documentation=https://github.com/868meshbot/meshbot
+# Weather/tide fetches and --host need the network up
+Wants=network-online.target
+After=network-online.target
+# Never stop retrying: the radio may be unplugged at boot or reconnected later
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=meshbot
+Group=meshbot
+# Serial access for --port (group is "uucp" on Arch-based systems)
+SupplementaryGroups=dialout
+
+# settings.yaml, db/, the BBS store and messages.log are all relative to this
+WorkingDirectory=/opt/meshbot
+# Prefer a stable /dev/serial/by-id/... path over /dev/ttyUSB0, which can change
+# between boots. For a network-connected node use: --host 192.168.1.50
+ExecStart=/opt/meshbot/.venv/bin/python /opt/meshbot/meshbot.py --port /dev/ttyUSB0
+
+# The bot closes the radio connection cleanly on Ctrl-C, so stop it the same way
+KillSignal=SIGINT
+TimeoutStopSec=20
+
+# The bot exits when it loses the radio; retry every 30s until it's back
+Restart=always
+RestartSec=30
+
+Environment=PYTHONUNBUFFERED=1
+
+# Hardening: the bot only needs to write inside its own directory.
+# If you keep MeshBot under /home, change ProtectHome to read-only.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/meshbot
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

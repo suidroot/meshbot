@@ -65,7 +65,7 @@ import serial.tools.list_ports
 
 from modules.bbs import BBS
 from modules.msglog import MessageLog
-from modules.tides import TidesScraper
+from modules.tides import NoaaTides, TidesScraper
 from modules.twin_cipher import TwinHexDecoder, TwinHexEncoder
 from modules.whois import Whois
 from modules.wttr import WeatherFetcher
@@ -132,6 +132,7 @@ class MeshBot:
         self.ip_host = ip_host
         self.db = db
         self.interface = None
+        self.connection_lost = threading.Event()
         self.weather_info = None
         self.tides_info = None
 
@@ -201,7 +202,13 @@ class MeshBot:
             logger.warning("FIREWALL is on but MYNODES is empty; all messages will be ignored")
 
         self.weather_fetcher = WeatherFetcher(self.location)
-        self.tides_scraper = TidesScraper(self.tide_location)
+        # tidetimes.org.uk only covers the UK; set TIDE_NOAA_STATION for US tides
+        noaa_station = settings.get("TIDE_NOAA_STATION")
+        if noaa_station:
+            self.tides_scraper = NoaaTides(noaa_station)
+            logger.info(f"Tides from NOAA station {noaa_station}")
+        else:
+            self.tides_scraper = TidesScraper(self.tide_location)
         self.bbs = BBS(settings.get("BBS_FILENAME", "./db/bbs.db"))
 
         # Set MESSAGE_LOG to an empty value to disable message logging
@@ -518,6 +525,9 @@ class MeshBot:
             logger.exception(f"Error handling {command}")
 
 
+    def on_connection_lost(self, interface):
+        self.connection_lost.set()
+
     # Main function
     def run(self):
         logger.info("Starting program.")
@@ -542,15 +552,24 @@ class MeshBot:
 
         # Receive Meshtastic Messages
         pub.subscribe(self.message_listener, "meshtastic.receive")
+        pub.subscribe(self.on_connection_lost, "meshtastic.connection.lost")
 
         logger.info("Press CTRL-C to terminate the program")
+        exit_code = 0
         try:
-            while True:
-                time.sleep(1)
+            # Exit if the radio goes away so a supervisor (e.g. systemd) can restart us
+            while not self.connection_lost.wait(1):
+                pass
+            logger.critical("Lost connection to the radio, exiting.")
+            exit_code = 1
         except KeyboardInterrupt:
             logger.info("Shutting down.")
         finally:
-            self.interface.close()
+            try:
+                self.interface.close()
+            except Exception as e:
+                logger.error(f"Error closing interface: {e}")
+        sys.exit(exit_code)
 
 def load_args():
     parser = argparse.ArgumentParser(description="Meshbot a bot for Meshtastic devices")
