@@ -385,10 +385,16 @@ class MeshBot:
 
         logger.info(f"Querying whois DB {self.db_filename} for: {term}")
         # IDs are stored as 0x61d3c63 or !061d3c63, so search on the bare unpadded hex
-        hex_term = term.lower().removeprefix("!").removeprefix("0x")
+        lowered = term.lower()
+        hex_term = lowered.removeprefix("!").removeprefix("0x")
+        # Short names are at most 4 chars and many are valid hex ("CAFE"), so only
+        # treat the term as a node ID if it has a prefix or is too long to be a name
+        is_id = all(c in string.hexdigits for c in hex_term) and (
+            hex_term != lowered or len(hex_term) > 4
+        )
         with Whois(self.db_filename) as whois_search:
             result = None
-            if hex_term and all(c in string.hexdigits for c in hex_term):
+            if is_id:
                 result = whois_search.search_nodes(hex_term.lstrip("0") or "0")
             if not result:
                 result = whois_search.search_nodes_sn(term)
