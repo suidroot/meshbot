@@ -2,6 +2,7 @@ import defusedxml.ElementTree as ET
 import json
 from datetime import datetime
 from urllib.parse import quote, urlencode
+from urllib.error import HTTPError
 from urllib.request import urlopen
 import logging
 
@@ -46,6 +47,9 @@ class NoaaTides:
                 tide_type = "High" if prediction["type"] == "H" else "Low"
                 formatted_output += f"{time} - {tide_type}\n"
             return formatted_output
+        except HTTPError as e:
+            e.close()
+            logger.error("Failed to fetch tide data for station %s: %s", self.station, e)
         except Exception as e:
             logger.error("Failed to fetch tide data: %s", e)
         return None
