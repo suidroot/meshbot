@@ -14,9 +14,8 @@ Documentation=https://github.com/868meshbot/meshbot
 # Weather/tide fetches and --host need the network up
 Wants=network-online.target
 After=network-online.target
-# Give up if it fails 10 times in 10 minutes (e.g. wrong --port)
-StartLimitIntervalSec=600
-StartLimitBurst=10
+# Never stop retrying: the radio may be unplugged at boot or reconnected later
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
@@ -35,7 +34,7 @@ ExecStart=/opt/meshbot/.venv/bin/python /opt/meshbot/meshbot.py --port /dev/ttyU
 KillSignal=SIGINT
 TimeoutStopSec=20
 
-# Restart if the radio is unplugged or the bot exits
+# The bot exits when it loses the radio; retry every 30s until it's back
 Restart=always
 RestartSec=30
 

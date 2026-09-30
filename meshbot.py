@@ -132,6 +132,7 @@ class MeshBot:
         self.ip_host = ip_host
         self.db = db
         self.interface = None
+        self.connection_lost = threading.Event()
         self.weather_info = None
         self.tides_info = None
 
@@ -518,6 +519,9 @@ class MeshBot:
             logger.exception(f"Error handling {command}")
 
 
+    def on_connection_lost(self, interface):
+        self.connection_lost.set()
+
     # Main function
     def run(self):
         logger.info("Starting program.")
@@ -542,15 +546,24 @@ class MeshBot:
 
         # Receive Meshtastic Messages
         pub.subscribe(self.message_listener, "meshtastic.receive")
+        pub.subscribe(self.on_connection_lost, "meshtastic.connection.lost")
 
         logger.info("Press CTRL-C to terminate the program")
+        exit_code = 0
         try:
-            while True:
-                time.sleep(1)
+            # Exit if the radio goes away so a supervisor (e.g. systemd) can restart us
+            while not self.connection_lost.wait(1):
+                pass
+            logger.critical("Lost connection to the radio, exiting.")
+            exit_code = 1
         except KeyboardInterrupt:
             logger.info("Shutting down.")
         finally:
-            self.interface.close()
+            try:
+                self.interface.close()
+            except Exception as e:
+                logger.error(f"Error closing interface: {e}")
+        sys.exit(exit_code)
 
 def load_args():
     parser = argparse.ArgumentParser(description="Meshbot a bot for Meshtastic devices")
