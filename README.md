@@ -126,6 +126,24 @@ or
 python meshbot.py --host 192.168.0.100
 ```
 
+### Run on boot (Linux / systemd)
+
+`meshbot.service` runs the bot as a service that starts on boot and restarts if the radio drops. It assumes MeshBot is installed in `/opt/meshbot` with its virtual environment in `.venv`, running as a `meshbot` user:
+
+```
+sudo useradd --system --home /opt/meshbot --groups dialout meshbot
+sudo chown -R meshbot:meshbot /opt/meshbot
+```
+
+Edit `meshbot.service` if your paths or user differ, and set `--port` (ideally a `/dev/serial/by-id/...` path, which stays the same across reboots) or `--host`. Then:
+
+```
+sudo cp meshbot.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now meshbot
+journalctl -u meshbot -f
+```
+
 ## Bot interaction
 
 You bot will be accessible through the meshtastic mesh network through the node name. DM the bot/node and issue any of the following commands:
