@@ -65,7 +65,7 @@ import serial.tools.list_ports
 
 from modules.bbs import BBS
 from modules.msglog import MessageLog
-from modules.tides import TidesScraper
+from modules.tides import NoaaTides, TidesScraper
 from modules.twin_cipher import TwinHexDecoder, TwinHexEncoder
 from modules.whois import Whois
 from modules.wttr import WeatherFetcher
@@ -202,7 +202,13 @@ class MeshBot:
             logger.warning("FIREWALL is on but MYNODES is empty; all messages will be ignored")
 
         self.weather_fetcher = WeatherFetcher(self.location)
-        self.tides_scraper = TidesScraper(self.tide_location)
+        # tidetimes.org.uk only covers the UK; set TIDE_NOAA_STATION for US tides
+        noaa_station = settings.get("TIDE_NOAA_STATION")
+        if noaa_station:
+            self.tides_scraper = NoaaTides(noaa_station)
+            logger.info(f"Tides from NOAA station {noaa_station}")
+        else:
+            self.tides_scraper = TidesScraper(self.tide_location)
         self.bbs = BBS(settings.get("BBS_FILENAME", "./db/bbs.db"))
 
         # Set MESSAGE_LOG to an empty value to disable message logging
