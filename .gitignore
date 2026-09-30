@@ -144,3 +144,6 @@ Thumbs.db
 # Windows
 Thumbs.db
 Desktop.ini
+# MeshBot BBS message store
+db/bbs.db
+messages.log

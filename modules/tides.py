@@ -1,4 +1,5 @@
 import defusedxml.ElementTree as ET
+from urllib.parse import quote
 from urllib.request import urlopen
 import logging
 
@@ -6,11 +7,13 @@ logger = logging.getLogger(__name__)
 
 class TidesScraper:
     def __init__(self, location):
-        self.rss_url = "https://www.tidetimes.org.uk/"+location.lower()+"-tide-times.rss"
+        slug = "-".join(location.strip().lower().split())
+        self.rss_url = "https://www.tidetimes.org.uk/" + quote(slug) + "-tide-times.rss"
 
     def get_tides(self):
+        """Return formatted tide text, or None if it could not be fetched."""
         try:
-            with urlopen(self.rss_url) as Client:
+            with urlopen(self.rss_url, timeout=30) as Client:
                 xml_page = Client.read()
                 root = ET.fromstring(xml_page)
                 for item in root.iter("item"):
@@ -25,14 +28,13 @@ class TidesScraper:
                     for info in tide_info:
                         time = info[0].strip()
                         tide_type = "High" if "High" in info[1] else "Low"
-                        tide_height = info[1].split("(")[-1].split("m")[0].strip()
-                        formatted_output += (
-                            f"{time} - {tide_type}\n"  # Tide ({tide_height}m)\n"
-                        )
+                        formatted_output += f"{time} - {tide_type}\n"
                     return formatted_output
+                logger.error("Failed to fetch tide data: no items in feed")
 
         except Exception as e:
-            logger.error("Failed to fetch tide data: %s",e )
+            logger.error("Failed to fetch tide data: %s", e)
+        return None
 
 
 
