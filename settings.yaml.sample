@@ -9,3 +9,7 @@ DBFILENAME: "./db/nodes.db"
 DM_MODE: True
 FIREWALL: True
 DUTYCYCLE: True
+BBS_FILENAME: "./db/bbs.db"
+# KILL_STRING: "your-shutdown-string"
+MESSAGE_LOG: "./messages.log"
+MESSAGE_LOG_LIMIT: 1000

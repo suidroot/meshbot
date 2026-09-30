@@ -76,8 +76,18 @@ Description
 
 - LOCATION and TIDE_LOCATION = These should be obvious
 - MYNODE = The hw address of the node connected in int/number form. This is so the bot only responds to DMs
-- MYNODES = A list of nodes (in int/number form) that are permitted to interact with the bot
-- DBFILENAME = Configure which user database file to use by default
+- MYNODES = A list of nodes (in int/number form) that are permitted to interact with the bot. Only these nodes may use the admin commands #fw, #dm and #kill_all_robots, even with the firewall off
+- DBFILENAME = Configure which user database file to use by default (overridden by --db)
+- BBS_FILENAME = Where BBS messages are stored so they survive a restart (default ./db/bbs.db)
+- KILL_STRING = Text sent by #kill_all_robots after confirmation; the command is disabled if unset
+- MESSAGE_LOG = Text file that records every message the bot sees (public channels and DMs) plus the bot's own replies (default ./messages.log). Set to "" to disable
+- MESSAGE_LOG_LIMIT = Maximum number of messages kept in MESSAGE_LOG; the oldest are dropped first (default 1000)
+
+Each line of the message log looks like:
+
+```
+2026-09-30 11:40:49 | RX | PUBLIC | LongFast | !00000007 (BOB) -> all | hello mesh
+```
 - DM_MODE = True: Only respond to DMs; False: responds to all traffic
 - FIREWALL = True: Only respond to MYNODES; False: responds to all traffic
 - DUTYCYCLE: True: Respect 10% Dutycycle in EU, false to disable for countries without Dutycycle

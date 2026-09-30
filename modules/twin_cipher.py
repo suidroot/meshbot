@@ -29,7 +29,11 @@ class TwinHexEncoder:
             pair = char[i : i + 2]
             if len(pair) < 2:
                 pair += " "
-            flag_out += self.base36encode(self.cbase.index(pair)).ljust(3, " ")
+            try:
+                index = self.cbase.index(pair)
+            except ValueError:
+                raise ValueError("only printable ASCII can be encoded") from None
+            flag_out += self.base36encode(index).ljust(3, " ")
         return flag_out
 
 
@@ -37,13 +41,12 @@ class TwinHexDecoder:
     cbase = [chr(x) + chr(y) for x in range(32, 128) for y in range(32, 128)]
 
     def decrypt(self, char):
-        flag_out = ""
+        # Raise rather than exit(): this runs inside the bot's receive thread
         try:
             triples = [char[i : i + 3] for i in range(0, len(char), 3)]
-            flag_out += "".join(self.cbase[int(x, 36)] for x in triples if x.strip())
-        except Exception as e:
-            exit(f"Error: {str(e)}")
-        return flag_out
+            return "".join(self.cbase[int(x, 36)] for x in triples if x.strip())
+        except (ValueError, IndexError) as e:
+            raise ValueError(f"invalid Twin-Hex input: {e}") from None
 
 
 def main():
@@ -69,12 +72,15 @@ def main():
     args = parser.parse_args()
 
     if args.text:
-        if args.decode:
-            print(f"Decoded Flag: {TwinHexDecoder().decrypt(args.text)}")
-        elif args.encode:
-            print(f"Encoded Flag: {TwinHexEncoder().encrypt(args.text)}")
-        else:
-            exit("[!] Provide either --encode or --decode argument")
+        try:
+            if args.decode:
+                print(f"Decoded Flag: {TwinHexDecoder().decrypt(args.text)}")
+            elif args.encode:
+                print(f"Encoded Flag: {TwinHexEncoder().encrypt(args.text)}")
+            else:
+                exit("[!] Provide either --encode or --decode argument")
+        except ValueError as e:
+            exit(f"Error: {e}")
     else:
         exit("usage: twin_cipher.py [-h] [-d] [-e] [text]")
 
